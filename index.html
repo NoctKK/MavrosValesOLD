@@ -532,6 +532,7 @@
         let timerEnd = 0;
         let animationFrameId = null;
         let fullScoreHistory = [];
+        let scoreboardPlayers = [];
         let isScoreboardExpanded = false;
         let msgQueue = [];
         let isMsgShowing = false;
@@ -760,12 +761,13 @@
                 const btn = document.getElementById('login-btn');
                 if (btn) {
                     btn.disabled = false;
-                    btn.innerText = "ΕΙΣΟΔΟΣ";
+                                            btn.innerText = 'ΕΙΣΟΔΟΣ';
                 }
             }
             msgQueue.push(m);
             if (!isMsgShowing) showNextMsg();
         });
+
         socket.on('actionRejected', () => {
             actionLocked = false;
         });
@@ -782,6 +784,11 @@
         socket.on('updateUI', data => {
             actionLocked = false;
             window.currentScoreData = data;
+
+            if (Array.isArray(data.players) && data.players.length) {
+                scoreboardPlayers = data.players.slice();
+            }
+
             document.getElementById('deck-count').innerText = data.deckCount;
             window.currentTopCard = data.topCard;
             window.currentActiveSuit = data.activeSuit;
@@ -869,6 +876,10 @@
         socket.on('rejoinSuccess', data => {
             document.getElementById('login-area').style.display = 'none';
 
+            if (Array.isArray(data.players) && data.players.length) {
+                scoreboardPlayers = data.players.slice();
+            }
+
             if (data.gameStarted) {
                 document.getElementById('start-screen').style.display = 'none';
                 fullScoreHistory = data.history || [];
@@ -881,7 +892,12 @@
         });
 
         socket.on('updateScoreboard', data => {
-            fullScoreHistory = data.history;
+            fullScoreHistory = data.history || [];
+
+            if (Array.isArray(data.players) && data.players.length) {
+                scoreboardPlayers = data.players.slice();
+            }
+
             renderScoreboard();
             document.getElementById('scoreboard').style.display = 'block';
         });
@@ -1192,15 +1208,49 @@
         function renderScoreboard() {
             const table = document.getElementById('score-table');
             if (!table || !fullScoreHistory.length) return;
-            const pIds = Object.keys(fullScoreHistory[0]);
+
+            const playersSource = (scoreboardPlayers && scoreboardPlayers.length)
+                ? scoreboardPlayers
+                : (window.currentScoreData?.players || []);
+
+            if (!playersSource.length) return;
+
+            const pKeys = [];
             const pMap = {};
-            (window.currentScoreData?.players || []).forEach(p => pMap[p.id] = p);
-            
-            let html = `<tr>${pIds.map(id => `<th>${pMap[id]?.name || 'Π'}${"🎩".repeat(pMap[id]?.hats || 0)}</th>`).join('')}</tr>`;
-            const dataToShow = isScoreboardExpanded ? fullScoreHistory : fullScoreHistory.slice(-5);
-            dataToShow.forEach(row => {
-                html += '<tr>' + pIds.map(id => `<td>${row[id] === "WC" ? '<b style="color:var(--gold)">WC</b>' : row[id]}</td>`).join('') + '</tr>';
+
+            playersSource.forEach(p => {
+                const key = p.sessionId || p.id;
+                if (!pKeys.includes(key)) pKeys.push(key);
+                pMap[key] = p;
+                if (p.id) pMap[p.id] = p;
             });
+
+            let html = `<tr>${
+                pKeys.map(key => `<th>${pMap[key]?.name || 'Π'}${"🎩".repeat(pMap[key]?.hats || 0)}</th>`).join('')
+            }</tr>`;
+
+            const dataToShow = isScoreboardExpanded ? fullScoreHistory : fullScoreHistory.slice(-4);
+
+            dataToShow.forEach(row => {
+                html += '<tr>' + pKeys.map(key => {
+                    let value = row[key];
+
+                    if (value === undefined && pMap[key]?.id) {
+                        value = row[pMap[key].id];
+                    }
+
+                    if (value === "WC") {
+                        return '<td><b style="color:var(--gold)">WC</b></td>';
+                    }
+
+                    if (value === undefined || value === null) {
+                        return '<td>-</td>';
+                    }
+
+                    return `<td>${value}</td>`;
+                }).join('') + '</tr>';
+            });
+
             table.innerHTML = html;
         }
 
