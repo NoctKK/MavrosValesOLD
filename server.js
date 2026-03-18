@@ -1,513 +1,813 @@
-                        btn.innerText = 'ΕΙΣΟΔΟΣ';
-                }
-            }
-            msgQueue.push(m);
-            if (!isMsgShowing) showNextMsg();
-        });
+const express = require('express');
+const http = require('http');
+const { Server } = require('socket.io');
+const path = require('path');
 
-        socket.on('actionRejected', () => {
-            actionLocked = false;
-        });
+const app = express();
+const server = http.createServer(app);
 
-        socket.on('invalidMove', () => {
-            actionLocked = false; 
-            msgQueue.push("⚠️ Άκυρη Κίνηση!");
-            if (!isMsgShowing) showNextMsg();
-            
-            document.querySelectorAll('.hand-card').forEach(c => c.classList.add('shake')); 
-            setTimeout(() => document.querySelectorAll('.hand-card').forEach(c => c.classList.remove('shake')), 180); 
-        });
+// === ΣΤΑΤΙΚΑ ΑΡΧΕΙΑ & PATHS ===
+app.get('/', (req, res) => {
+    res.sendFile(path.join(__dirname, 'index.html'));
+});
 
-        socket.on('updateUI', data => {
-            actionLocked = false;
-            window.currentScoreData = data;
+app.get('/ping', (req, res) => {
+    res.send('pong');
+});
 
-            if (Array.isArray(data.players) && data.players.length) {
-                scoreboardPlayers = data.players.slice();
-            }
+// === ΣΤΑΘΕΡΕΣ ΠΑΙΧΝΙΔΙΟΥ ===
+const TURN_TIME_MS = 60000;
+const LOBBY_IDLE_MS = 120000;
+const ROUND_RESTART_MS = 4000;
+const DEAL_INTERVAL_MS = 50;
+const STARTING_HAND_SIZE = 11;
+const MAX_SCORE = 500;
+const MAX_NAME_LEN = 15;
+const MAX_CHAT_LEN = 80;
 
-            document.getElementById('deck-count').innerText = data.deckCount;
-            window.currentTopCard = data.topCard;
-            window.currentActiveSuit = data.activeSuit;
+const SUITS = ['♠', '♣', '♥', '♦'];
+const VALUES = ['A', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K'];
 
-            if (data.currentPlayerId && data.currentPlayerId !== lastPlayerId) {
-                lastPlayerId = data.currentPlayerId;
-                startTimer(60);
-            }
+const io = new Server(server, {
+    cors: { origin: "*", methods: ["GET", "POST"] }
+});
 
-            if (data.topCard && data.discardCount !== undefined && data.discardCount > lastDiscardCount) {
-                addCardToPile(data.topCard);
-                lastDiscardCount = data.discardCount;
-            }
+class Game {
+    constructor() {
+        this.deck = [];
+        this.discardPile = [];
+        this.discardCount = 0;
 
-            const suitDisplay = document.getElementById('active-suit-display');
-            if (suitDisplay) {
-                if (data.activeSuit) {
-                    suitDisplay.innerText = data.activeSuit;
-                    suitDisplay.style.color = (data.activeSuit === '♥' || data.activeSuit === '♦') ? '#ff4444' : '#222';
-                    suitDisplay.style.display = 'block';
-                    suitDisplay.style.textShadow = "0 0 10px white, 0 0 20px white";
-                } else {
-                    suitDisplay.style.display = 'none';
-                }
-            }
+        this.players = {};
+        this.playerOrder = [];
 
-            const ind = document.getElementById('turn-indicator');
-            const handCont = document.getElementById('my-hand-container');
-            if (ind && handCont) {
-                if (data.isMyTurn) {
-                    ind.innerText = data.penalty > 0 ? `⚠️ ΦΑΕ ${data.penalty}!` : "ΔΙΚΗ ΣΟΥ ΣΕΙΡΑ";
-                    ind.style.borderColor = "#4f4";
-                    ind.style.color = "#4f4";
-                    handCont.classList.remove('not-my-turn');
-                } else {
-                    ind.innerText = `ΠΑΙΖΕΙ: ${data.currentPlayerName}`;
-                    ind.style.borderColor = "#ff4444";
-                    ind.style.color = "#ffdddd";
-                    handCont.classList.add('not-my-turn');
-                }
-            }
+        this.gameStarted = false;
+        this.starting = false;
+        this.roundHistory = [];
+        this.roundStarterIndex = 0;
 
-            renderHand(data.myHand);
-            distributePlayers(data.players, data.currentPlayerName, data.isMyTurn);
-            updateDirectionIndicator(data.players, data.direction);
-        });
+        this.timers = { lobby: null, deal: null, turn: null, restart: null };
+        this.resetRoundState();
+    }
 
-        socket.on('revealHands', playersData => {
-            clearGameTimer();
-            lastPlayerId = null;
-            document.getElementById('pile-container').innerHTML = '';
-            lastDiscardCount = 0;
+    resetRoundState() {
+        this.penaltyStack = 0;
+        this.penaltyType = null;
+        this.activeSuit = null;
+        this.consecutiveTwos = 0;
+        this.direction = 1;
+        this.turnIndex = 0;
+    }
 
-            const others = playersData.filter(p => p.id !== myId);
-            const slots = ['slot-left', 'slot-top', 'slot-right'];
-            
-            others.forEach((p, i) => {
-                const container = document.getElementById(slots[i]);
-                if (container && p.hand) {
-                    let cardsHtml = '';
-                    p.hand.forEach((c, idx) => {
-                        if (!c) return;
-                        const color = (c.color === 'red') ? '#d00' : 'black';
-                        cardsHtml += `<div class="card" style="color:${color}; z-index:${idx};">${c.value}<div style="font-size:18px; line-height:1;">${c.suit}</div></div>`;
-                    });
-                    
-                    container.innerHTML = `
-                        <div class="panel player-info" style="opacity: 1; z-index: 2000;">
-                            <div class="player-name" style="font-weight:bold; font-size:18px;">${p.name}</div>
-                            <div style="font-size:12px; color:#4f4; margin-top:3px;">Σκορ: ${p.totalScore}</div>
-                        </div>
-                        <div class="player-cards" style="margin-top: 10px;">${cardsHtml}</div>
-                        <div class="card-count-box" style="opacity: 1">${p.hand.length} φύλλα</div>`;
-                }
-            });
-        });
-
-        socket.on('gameOver', msg => {
-            clearGameTimer();
-            document.getElementById('game-wrapper').style.filter = "blur(10px)";
-            document.getElementById('victory-msg').innerText = msg;
-            document.getElementById('victory-screen').style.display = 'flex';
-        });
-
-        socket.on('rejoinSuccess', data => {
-            document.getElementById('login-area').style.display = 'none';
-
-            if (Array.isArray(data.players) && data.players.length) {
-                scoreboardPlayers = data.players.slice();
-            }
-
-            if (data.gameStarted) {
-                document.getElementById('start-screen').style.display = 'none';
-                fullScoreHistory = data.history || [];
-                renderScoreboard();
-                document.getElementById('scoreboard').style.display = 'block';
-            } else {
-                document.getElementById('waiting-area').style.display = 'block';
-                document.getElementById('start-screen').style.display = 'flex';
+    clearAllTimers() {
+        Object.values(this.timers).forEach(t => {
+            if (t) {
+                clearTimeout(t);
+                clearInterval(t);
             }
         });
+        this.timers = { lobby: null, deal: null, turn: null, restart: null };
+    }
 
-        socket.on('updateScoreboard', data => {
-            fullScoreHistory = data.history || [];
+    resetToLobby() {
+        this.clearAllTimers();
 
-            if (Array.isArray(data.players) && data.players.length) {
-                scoreboardPlayers = data.players.slice();
-            }
+        this.deck = [];
+        this.discardPile = [];
+        this.discardCount = 0;
 
-            renderScoreboard();
-            document.getElementById('scoreboard').style.display = 'block';
-        });
+        this.gameStarted = false;
+        this.starting = false;
+        this.roundHistory = [];
+        this.roundStarterIndex = 0;
+        this.resetRoundState();
 
-        document.getElementById('my-hand-container').addEventListener('click', function(e) {
-            const cardEl = e.target.closest('.hand-card');
-            if (!cardEl) return;
-            
-            const index = parseInt(cardEl.getAttribute('data-index'), 10);
-            const value = cardEl.getAttribute('data-value');
-            const suit = cardEl.getAttribute('data-suit');
-            
-            playCardLogic(index, value, suit);
-        });
+        // κρατάμε μόνο τους συνδεδεμένους στο lobby
+        this.playerOrder = this.playerOrder.filter(id => this.players[id] && this.players[id].connected);
 
-        function renderHand(hand) {
-            const container = document.getElementById('my-hand-container');
-            if (!container) return;
-            container.className = hand.length > 15 ? 'hand-compact' : 'hand-normal';
-            
-            const frag = document.createDocumentFragment();
-            let overlap = (hand.length > 15) ? "-25px" : (hand.length > 8 ? "-60px" : "-55px");
-
-            hand.forEach((c, i) => {
-                if (!c) return;
-                const div = document.createElement("div");
-                const isRed = (c.suit === '♥' || c.suit === '♦');
-                div.className = `card-base hand-card card-${i} ${isRed ? 'red' : ''}`;
-                div.style.marginLeft = i === 0 ? "0px" : overlap;
-                div.style.zIndex = i; 
-                
-                div.setAttribute('data-index', i);
-                div.setAttribute('data-value', c.value);
-                div.setAttribute('data-suit', c.suit);
-
-                div.innerHTML = `
-                    <div class="card-corner">${c.value}<div>${c.suit}</div></div>
-                    <div class="card-center">${c.suit}</div>
-                    <div class="card-corner bottom">${c.value}<div>${c.suit}</div></div>`;
-                
-                frag.appendChild(div);
-            });
-
-            container.innerHTML = "";
-            container.appendChild(frag);
-        }
-
-        function playCardLogic(index, value, suit) {
-            const handCont = document.getElementById('my-hand-container');
-            if (handCont && handCont.classList.contains('not-my-turn')) return;
-            if (actionLocked || Date.now() - lastClick < CLICK_DELAY) return;
-
-            if (value === 'A') {
-                const topCard = window.currentTopCard;
-                const effectiveSuit = window.currentActiveSuit || (topCard ? topCard.suit : null);
-                
-                if (topCard && topCard.value === 'A' && suit === effectiveSuit) {
-                    executePlayCard(index, null);
-                    return;
-                }
-
-                selectedAceIndex = index;
-                document.getElementById('ace-modal').style.display = 'flex';
+        Object.keys(this.players).forEach(id => {
+            const p = this.players[id];
+            if (!p || !p.connected) {
+                delete this.players[id];
                 return;
             }
 
-            executePlayCard(index, null);
+            p.hand = [];
+            p.totalScore = 0;
+            p.hats = 0;
+            p.hasDrawn = false;
+            p.hasAtePenalty = false;
+            p.lastChat = 0;
+        });
+
+        io.emit('playerCountUpdate', this.playerOrder.length);
+    }
+
+    forceEmergencyReset() {
+        this.resetToLobby();
+        io.emit('gameInterrupted', { message: '🚨 Σφάλμα διακομιστή. Επαναφορά...' });
+        io.emit('notification', '🚨 Σφάλμα διακομιστή. Επαναφορά...');
+        this.refreshLobbyTimer();
+    }
+
+    createDeck() {
+        let newDeck = [];
+        for (let i = 0; i < 2; i++) {
+            SUITS.forEach(s => {
+                VALUES.forEach(v => {
+                    newDeck.push({
+                        suit: s,
+                        value: v,
+                        color: (s === '♥' || s === '♦') ? 'red' : 'black'
+                    });
+                });
+            });
+        }
+        return this.shuffle(newDeck);
+    }
+
+    shuffle(deck) {
+        for (let i = deck.length - 1; i > 0; i--) {
+            const j = Math.floor(Math.random() * (i + 1));
+            [deck[i], deck[j]] = [deck[j], deck[i]];
+        }
+        return deck;
+    }
+
+    calculateHandScore(hand) {
+        return hand.reduce((score, c) => {
+            if (c.value === 'A') return score + 50;
+            if (['K', 'Q', 'J', '10'].includes(c.value)) return score + 10;
+            return score + (Number(c.value) || 0);
+        }, 0);
+    }
+
+    resetLobby() {
+        if (!this.gameStarted) {
+            this.players = {};
+            this.playerOrder = [];
+            this.deck = [];
+            this.discardPile = [];
+            this.discardCount = 0;
+            this.roundHistory = [];
+            this.roundStarterIndex = 0;
+            this.resetRoundState();
+
+            io.emit('playerCountUpdate', 0);
+            io.emit('notification', 'Το lobby μηδενίστηκε λόγω αδράνειας.');
+        }
+    }
+
+    refreshLobbyTimer() {
+        if (this.gameStarted) return;
+        if (this.timers.lobby) clearTimeout(this.timers.lobby);
+        this.timers.lobby = setTimeout(() => this.resetLobby(), LOBBY_IDLE_MS);
+    }
+
+    safeDraw(player) {
+        if (!player) return false;
+
+        if (this.deck.length === 0) {
+            if (this.discardPile.length <= 1) return false;
+            const topCard = this.discardPile.pop();
+            this.deck = this.shuffle([...this.discardPile]);
+            this.discardPile = [topCard];
+            io.emit('notification', '🔄 Ανακάτεμα τράπουλας!');
         }
 
-        function confirmAce(chosenSuit) {
-            if (selectedAceIndex === null) return;
-            executePlayCard(selectedAceIndex, chosenSuit);
-            document.getElementById('ace-modal').style.display = 'none';
-            selectedAceIndex = null;
+        if (this.deck.length > 0) {
+            player.hand.push(this.deck.pop());
+            return true;
+        }
+        return false;
+    }
+
+    resetTurnTimer() {
+        if (this.timers.turn) clearTimeout(this.timers.turn);
+        if (!this.gameStarted || this.playerOrder.length === 0) return;
+        this.timers.turn = setTimeout(() => this.autoPlayTurn(), TURN_TIME_MS);
+    }
+
+    getNextActivePlayerIndex(startIndex, steps = 1) {
+        const activeCount = this.playerOrder.filter(id => this.players[id] && this.players[id].connected).length;
+        if (activeCount === 0) return 0;
+
+        let idx = startIndex;
+        const n = this.playerOrder.length;
+
+        for (let i = 0; i < steps; i++) {
+            do {
+                idx = (idx + this.direction + n) % n;
+            } while (!this.players[this.playerOrder[idx]] || !this.players[this.playerOrder[idx]].connected);
+        }
+        return idx;
+    }
+
+    getPreviousActivePlayerIndex(startIndex, steps = 1) {
+        const activeCount = this.playerOrder.filter(id => this.players[id] && this.players[id].connected).length;
+        if (activeCount === 0) return 0;
+
+        let idx = startIndex;
+        const n = this.playerOrder.length;
+
+        for (let i = 0; i < steps; i++) {
+            do {
+                idx = (idx - this.direction + n) % n;
+            } while (!this.players[this.playerOrder[idx]] || !this.players[this.playerOrder[idx]].connected);
+        }
+        return idx;
+    }
+
+    advanceTurn(steps) {
+        if (this.playerOrder.length === 0) return;
+
+        this.turnIndex = this.getNextActivePlayerIndex(this.turnIndex, steps);
+
+        this.playerOrder.forEach(id => {
+            if (this.players[id]) {
+                this.players[id].hasDrawn = false;
+                this.players[id].hasAtePenalty = false;
+            }
+        });
+
+        this.resetTurnTimer();
+    }
+
+    autoPlayTurn() {
+        if (!this.gameStarted || this.playerOrder.length === 0) return;
+
+        const currentId = this.playerOrder[this.turnIndex];
+        const p = this.players[currentId];
+
+        if (!p || !p.connected) {
+            this.advanceTurn(1);
+            this.broadcastUpdate();
+            return;
         }
 
-        function cancelAce() {
-            selectedAceIndex = null;
-            document.getElementById('ace-modal').style.display = 'none';
-            actionLocked = false;
+        io.emit('notification', `Ο χρόνος έληξε! Auto-pass: ${p.name}`);
+
+        if (this.penaltyStack > 0) {
+            for (let i = 0; i < this.penaltyStack; i++) this.safeDraw(p);
+            this.penaltyStack = 0;
+            this.penaltyType = null;
+            p.hasAtePenalty = true;
+        } else if (!p.hasDrawn) {
+            this.safeDraw(p);
+            p.hasDrawn = true;
         }
 
-        function createFlyingCardNode(isBack = false) {
-            const clone = document.createElement('div');
-            clone.className = isBack ? 'flying-card' : 'flying-card card-base';
+        this.advanceTurn(1);
+        this.broadcastUpdate();
+    }
 
-            if (isBack) {
-                clone.style.width = '77px';
-                clone.style.height = '112px';
-                clone.style.background = 'linear-gradient(135deg, #a00, #500)';
-                clone.style.border = '2px solid white';
-                clone.style.borderRadius = '5px';
+    joinGame(socket, data) {
+        this.refreshLobbyTimer();
+
+        let username = data?.username;
+        let sessionId = data?.sessionId;
+
+        if (sessionId != null) {
+            sessionId = String(sessionId).trim().slice(0, 100);
+            if (!sessionId) sessionId = null;
+        } else {
+            sessionId = null;
+        }
+
+        let cleanName = username
+            ? String(username).replace(/[<>]/g, '').trim().substring(0, MAX_NAME_LEN)
+            : "Παίκτης " + (this.playerOrder.length + 1);
+
+        if (!cleanName) cleanName = "Παίκτης " + (this.playerOrder.length + 1);
+        if (["δήμητρα", "δημητρα", "δημητρούλα"].includes(cleanName.toLowerCase())) cleanName += " ❤️";
+
+        const existingId = Object.keys(this.players).find(id => this.players[id].sessionId === sessionId && sessionId != null);
+
+        if (existingId) {
+            if (existingId === socket.id) {
+                this.players[socket.id].connected = true;
+
+                socket.emit('rejoinSuccess', {
+                    gameStarted: this.gameStarted,
+                    myHand: this.players[socket.id].hand,
+                    history: this.roundHistory,
+                    players: this.playerOrder.map(id => this.players[id]).filter(Boolean)
+                });
+
+                if (this.gameStarted) this.broadcastUpdate();
+                else io.emit('playerCountUpdate', this.playerOrder.length);
+
+                return;
             }
 
-            return clone;
-        }
+            this.players[socket.id] = this.players[existingId];
+            this.players[socket.id].id = socket.id;
+            this.players[socket.id].connected = true;
 
-        function animateCardFlight(fromRect, toRect, sourceScale = gameScale, rotateDeg = 0, isBack = false) {
-            const clone = createFlyingCardNode(isBack);
-            const startX = fromRect.left;
-            const startY = fromRect.top;
-            const endX = toRect.left;
-            const endY = toRect.top;
+            const idx = this.playerOrder.indexOf(existingId);
+            if (idx !== -1) this.playerOrder[idx] = socket.id;
 
-            clone.style.left = '0px';
-            clone.style.top = '0px';
-            clone.style.opacity = '1';
-            clone.style.transform = `translate3d(${startX}px, ${startY}px, 0) scale(${sourceScale}) rotate(0deg)`;
+            delete this.players[existingId];
 
-            document.body.appendChild(clone);
-
-            requestAnimationFrame(() => {
-                clone.style.transform = `translate3d(${endX}px, ${endY}px, 0) scale(${sourceScale}) rotate(${rotateDeg}deg)`;
-                clone.style.opacity = '0.45';
+            socket.emit('rejoinSuccess', {
+                gameStarted: this.gameStarted,
+                myHand: this.players[socket.id].hand,
+                history: this.roundHistory,
+                players: this.playerOrder.map(id => this.players[id]).filter(Boolean)
             });
 
-            setTimeout(() => {
-                if (document.body.contains(clone)) clone.remove();
-            }, ANIM_MS);
-
-            return clone;
+            io.emit('playerCountUpdate', this.playerOrder.length);
+            if (this.gameStarted) this.broadcastUpdate();
+            return;
         }
 
-        function executePlayCard(index, declaredSuit) {
-            const cardElement = document.querySelector(`.card-${index}`);
-            if (cardElement) animateThrow(cardElement);
-
-            actionLocked = true;
-            lastClick = Date.now();
-            socket.emit('playCard', { index: index, declaredSuit: declaredSuit });
+        if (this.gameStarted) {
+            return socket.emit('notification', 'Το παιχνίδι έχει ήδη ξεκινήσει!');
         }
 
-        function triggerDrawAnimation() {
-            const handCont = document.getElementById('my-hand-container');
-            if (actionLocked || handCont.classList.contains('not-my-turn')) return;
-            
-            actionLocked = true;
-            lastClick = Date.now();
+        this.players[socket.id] = {
+            id: socket.id,
+            sessionId,
+            hand: [],
+            name: cleanName,
+            totalScore: 0,
+            hats: 0,
+            hasDrawn: false,
+            hasAtePenalty: false,
+            connected: true,
+            lastChat: 0
+        };
 
-            socket.emit('drawCard');
+        this.playerOrder.push(socket.id);
 
-            const deckEl = document.getElementById('draw-pile');
-            if (!deckEl || !handCont) return;
+        io.emit('playerCountUpdate', this.playerOrder.length);
+        socket.emit('joinedLobby');
+    }
 
-            const rectDeck = deckEl.getBoundingClientRect();
-            const rectHand = handCont.getBoundingClientRect();
+    playCard(socket, data) {
+        this.refreshLobbyTimer();
+        const p = this.players[socket.id];
 
-            const fromRect = {
-                left: rectDeck.left,
-                top: rectDeck.top,
-                width: 77,
-                height: 112
-            };
-
-            const toRect = {
-                left: rectHand.left + rectHand.width / 2 - 38,
-                top: rectHand.top - 20,
-                width: 77,
-                height: 112
-            };
-
-            animateCardFlight(fromRect, toRect, gameScale, 180, true);
+        if (!data || typeof data !== 'object') {
+            return socket.emit('actionRejected');
         }
 
-        function animateThrow(elem) {
-            const pileContainer = document.getElementById('pile-container');
-            if (!pileContainer || !elem) return;
-
-            const rect = elem.getBoundingClientRect();
-            const pileRect = pileContainer.getBoundingClientRect();
-
-            const fromRect = {
-                left: rect.left,
-                top: rect.top,
-                width: rect.width,
-                height: rect.height
-            };
-
-            const toRect = {
-                left: pileRect.left,
-                top: pileRect.top,
-                width: rect.width,
-                height: rect.height
-            };
-
-            const clone = elem.cloneNode(true);
-            clone.className = 'flying-card card-base';
-            clone.style.left = '0px';
-            clone.style.top = '0px';
-            clone.style.margin = '0';
-            clone.style.opacity = '1';
-            clone.style.transform = `translate3d(${fromRect.left}px, ${fromRect.top}px, 0) scale(${gameScale}) rotate(0deg)`;
-            document.body.appendChild(clone);
-
-            requestAnimationFrame(() => {
-                clone.style.transform = `translate3d(${toRect.left}px, ${toRect.top}px, 0) scale(${gameScale}) rotate(${Math.random() * 24 - 12}deg)`;
-                clone.style.opacity = '0.5';
-            });
-            
-            setTimeout(() => {
-                if (document.body.contains(clone)) clone.remove();
-            }, ANIM_MS);
+        if (!this.gameStarted || this.playerOrder[this.turnIndex] !== socket.id || !p) {
+            return socket.emit('actionRejected');
         }
 
-        function addCardToPile(c) {
-            const container = document.getElementById('pile-container');
-            if (!container) return;
-            
-            const div = document.createElement('div');
-            const isRed = (c.suit === '♥' || c.suit === '♦');
-            div.className = `card-base pile-card ${isRed ? 'red' : ''}`; 
-            
-            const spread = IS_TOUCH_DEVICE ? 16 : 24;
-            const rot = IS_TOUCH_DEVICE ? 18 : 30;
-            const x = Math.random() * spread - spread / 2;
-            const y = Math.random() * spread - spread / 2;
-            const r = Math.random() * rot - rot / 2; 
-            
-            div.style.transform = `translate(${x}px, ${y}px) rotate(${r}deg)`;
-            div.innerHTML = `
-                <div class="card-corner">${c.value}<div>${c.suit}</div></div>
-                <div class="card-center">${c.suit}</div>
-                <div class="card-corner bottom">${c.value}<div>${c.suit}</div></div>`;
-            
-            container.appendChild(div);
-            
-            const cards = container.querySelectorAll('.pile-card');
-            const maxPileVisuals = IS_TOUCH_DEVICE ? 10 : 15;
-            if (cards.length > maxPileVisuals) {
-                cards[0].remove();
+        if (!Number.isInteger(data.index) || data.index < 0 || data.index >= p.hand.length) {
+            return socket.emit('actionRejected');
+        }
+
+        if (data.declaredSuit && !SUITS.includes(data.declaredSuit)) {
+            return socket.emit('actionRejected');
+        }
+
+        const card = p.hand[data.index];
+        const topCard = this.discardPile[this.discardPile.length - 1];
+        const top2 = this.discardPile.length >= 2 ? this.discardPile[this.discardPile.length - 2] : null;
+        const effectiveSuit = this.activeSuit || topCard.suit;
+        let isValid = false;
+
+        if (this.penaltyStack > 0) {
+            if (this.penaltyType === '7' && card.value === '7') isValid = true;
+            if (this.penaltyType === 'J' && card.value === 'J') isValid = true;
+        } else {
+            if (card.value === 'A') isValid = true;
+            else if (card.value === topCard.value || card.suit === effectiveSuit) isValid = true;
+            else if (card.value === 'J' && card.color === 'red' && topCard.value === 'J') isValid = true;
+        }
+
+        if (!isValid) return socket.emit('invalidMove');
+
+        const isSpecial = ['7', '8', 'J', 'A'].includes(card.value);
+
+        if (!isSpecial && topCard) {
+            if (card.value === topCard.value && card.suit === topCard.suit) {
+                io.emit('notification', `${p.name}: Copy paste! 👯`);
+            } else if (
+                top2 &&
+                topCard.value === top2.value &&
+                topCard.suit === top2.suit &&
+                card.value === topCard.value &&
+                card.suit !== topCard.suit
+            ) {
+                io.emit('notification', `${p.name}: Copy erased! ❌`);
             }
         }
 
-        function distributePlayers(players, curName, isMyTurn) {
-            const myIdx = players.findIndex(p => p.id === myId);
-            if (myIdx === -1) return;
-            
-            const myInfo = document.getElementById('my-info-container');
-            if (myInfo) {
-                myInfo.innerHTML = `
-                    <div class="panel player-info ${isMyTurn ? 'active' : ''}" style="z-index: 2000;">
-                        ${isMyTurn ? '<div class="turn-indicator-dot"></div>' : ''}
-                        <div style="font-weight:bold; font-size:18px;">${players[myIdx].name}</div>
-                        ${players[myIdx].hats > 0 ? `<div style="margin-top:2px;">${"🎩".repeat(players[myIdx].hats)}</div>` : ''}
-                    </div>`;
+        if (card.value === 'A') {
+            if (topCard && topCard.value === 'A' && card.suit === effectiveSuit && !data.declaredSuit) {
+                this.activeSuit = null;
+                io.emit('notification', `${p.name}: Σαν φύλλο!`);
+            } else {
+                this.activeSuit = data.declaredSuit || card.suit;
             }
-
-            const others = players.slice(myIdx).concat(players.slice(0, myIdx)).slice(1);
-            const slotIds = ['slot-left', 'slot-top', 'slot-right'];
-            slotIds.forEach(id => {
-                const el = document.getElementById(id);
-                if (el) el.innerHTML = '';
-            });
-
-            others.forEach((p, i) => {
-                const container = document.getElementById(slotIds[i]);
-                if (!container) return;
-                const active = p.name === curName;
-                container.innerHTML = `
-                    <div class="panel player-info ${active ? 'active' : ''}" style="opacity:${p.connected ? 1 : 0.4}; z-index: 2000;">
-                        ${active ? '<div class="turn-indicator-dot"></div>' : ''}
-                        <div style="font-weight:bold; font-size:18px;">${p.name}${p.connected ? '' : ' (Αποσ.)'}</div>
-                        ${p.hats > 0 ? `<div style="margin-top:2px;">${"🎩".repeat(p.hats)}</div>` : ''}
-                    </div>
-                    <div class="opp-hand" style="width:${30 + (Math.min(p.handCount, 15) - 1) * 8}px">
-                        ${Array(Math.min(p.handCount, 15)).fill(0).map((_, idx) => `<div class="mini-card" style="left:${idx * 8}px; z-index:${idx};"></div>`).join('')}
-                    </div>
-                    <div class="card-count-box">${p.handCount} φύλλα</div>`;
-            });
+        } else {
+            this.activeSuit = null;
         }
 
-        function updateDirectionIndicator(playersArray, dir) {
-            if (!playersArray || !playersArray.length) return;
-            let names = playersArray.map(p => (p.name || "").replace('❤️', '').trim());
-            
-            let initials = names.map((name, i) => {
-                let len = 1;
-                let init = name.substring(0, len).toUpperCase();
-                while (len <= name.length) {
-                    let conflict = false;
-                    for (let j = 0; j < names.length; j++) {
-                        if (i !== j && names[j].toUpperCase().startsWith(init)) {
-                            conflict = true; 
-                            break;
-                        }
-                    }
-                    if (!conflict) break;
-                    len++;
-                    init = name.substring(0, len).toUpperCase();
+        p.hand.splice(data.index, 1);
+        this.discardPile.push(card);
+        this.discardCount++;
+
+        if (p.hand.length === 1) {
+            io.emit('notification', `${p.name}: Μία μία μία μία! ⚠️`);
+        }
+
+        if (p.hand.length === 0) {
+            if (card.value === '8') {
+                this.safeDraw(p);
+                io.emit('notification', `${p.name}: Έκλεισα με 8 και τραβάω αναγκαστικά φύλλο! 🃏`);
+                this.processCardLogic(card, p);
+                this.broadcastUpdate();
+                return;
+            }
+
+            let isPenaltyHandled = false;
+            const nextVictim = this.playerOrder[this.getNextActivePlayerIndex(this.turnIndex, 1)];
+            const prevVictim = this.playerOrder[this.getPreviousActivePlayerIndex(this.turnIndex, 1)];
+
+            if (card.value === 'J' && card.color === 'black') {
+                const totalPenalty = (this.penaltyType === 'J' ? this.penaltyStack : 0) + 10;
+                for (let i = 0; i < totalPenalty; i++) this.safeDraw(this.players[nextVictim]);
+                io.emit('notification', `${p.name}: Κλείσιμο με Μαύρο Βαλέ! +${totalPenalty} στον/στην ${this.players[nextVictim].name}!`);
+                this.penaltyStack = 0;
+                this.penaltyType = null;
+                isPenaltyHandled = true;
+            } else if (card.value === '7') {
+                const totalPenalty = (this.penaltyType === '7' ? this.penaltyStack : 0) + 2;
+                for (let i = 0; i < totalPenalty; i++) this.safeDraw(this.players[nextVictim]);
+                io.emit('notification', `${p.name}: Κλείσιμο με 7! +${totalPenalty} στον/στην ${this.players[nextVictim].name}!`);
+                this.penaltyStack = 0;
+                this.penaltyType = null;
+                isPenaltyHandled = true;
+            } else if (card.value === '2') {
+                this.safeDraw(this.players[prevVictim]);
+                io.emit('notification', `${p.name}: Κλείσιμο με 2! +1 στον/στην ${this.players[prevVictim].name}!`);
+                isPenaltyHandled = true;
+            }
+
+            if (this.timers.turn) clearTimeout(this.timers.turn);
+            this.broadcastUpdate();
+            this.timers.restart = setTimeout(
+                () => this.handleRoundEnd(socket.id, card.value === 'A'),
+                isPenaltyHandled ? 3000 : 1500
+            );
+            return;
+        }
+
+        this.processCardLogic(card, p);
+        this.broadcastUpdate();
+    }
+
+    drawCard(socket) {
+        this.refreshLobbyTimer();
+        const p = this.players[socket.id];
+
+        if (!this.gameStarted || this.playerOrder[this.turnIndex] !== socket.id || !p) {
+            return socket.emit('actionRejected');
+        }
+
+        if (this.penaltyStack > 0) {
+            for (let i = 0; i < this.penaltyStack; i++) this.safeDraw(p);
+            this.penaltyStack = 0;
+            this.penaltyType = null;
+            p.hasAtePenalty = true;
+            this.resetTurnTimer();
+            this.broadcastUpdate();
+            return;
+        }
+
+        if (p.hasDrawn) return socket.emit('notification', 'Έχεις ήδη τραβήξει φύλλο!');
+
+        this.safeDraw(p);
+        p.hasDrawn = true;
+        this.resetTurnTimer();
+        this.broadcastUpdate();
+    }
+
+    passTurn(socket) {
+        this.refreshLobbyTimer();
+        const p = this.players[socket.id];
+
+        if (!this.gameStarted || this.playerOrder[this.turnIndex] !== socket.id || !p) return;
+
+        if (this.penaltyStack > 0) return socket.emit('notification', 'Πρέπει να τραβήξεις τις κάρτες ποινής πρώτα!');
+        if (!p.hasDrawn) return socket.emit('notification', 'Δεν μπορείς να πας πάσο αν δεν τραβήξεις φύλλο!');
+
+        this.advanceTurn(1);
+        this.broadcastUpdate();
+    }
+
+    processCardLogic(card, p) {
+        let advance = true;
+        let steps = 1;
+        const isStart = (!p || !p.id);
+
+        if (card.value === '2') {
+            this.consecutiveTwos++;
+            if (!isStart) {
+                let msg = `${p.name}: Πάρε μία! 🃏`;
+                if (this.consecutiveTwos >= 3) {
+                    msg += "\nΞες πώς πάνε αυτά! 😂";
+                    this.consecutiveTwos = 0;
                 }
-                return init;
+                io.emit('notification', msg);
+
+                const victimId = this.playerOrder[this.getPreviousActivePlayerIndex(this.turnIndex, 1)];
+                this.safeDraw(this.players[victimId]);
+            }
+        } else {
+            this.consecutiveTwos = 0;
+        }
+
+        if (card.value === '8') {
+            advance = false;
+            if (!isStart) p.hasDrawn = false;
+        } else if (card.value === '7') {
+            this.penaltyStack += 2;
+            this.penaltyType = '7';
+        } else if (card.value === 'J' && card.color === 'black') {
+            this.penaltyStack += 10;
+            this.penaltyType = 'J';
+        } else if (card.value === 'J' && card.color === 'red') {
+            this.penaltyStack = 0;
+            this.penaltyType = null;
+        } else if (card.value === '3') {
+            if (this.playerOrder.length === 2) advance = false;
+            else this.direction *= -1;
+        } else if (card.value === '9') {
+            steps = (this.playerOrder.length === 2) ? 0 : 2;
+            advance = (this.playerOrder.length !== 2);
+            if (!isStart) {
+                if (this.playerOrder.length === 2) io.emit('notification', `${p.name}: Ξανά παίζω! 🍹`);
+                else io.emit('notification', `${p.name}: Άραξε 🍹`);
+            }
+        }
+
+        if (advance) this.advanceTurn(steps);
+        else this.resetTurnTimer();
+    }
+
+    startNewRound(reset = false) {
+        this.gameStarted = true;
+        this.starting = false;
+        this.deck = this.createDeck();
+        this.discardPile = [];
+        this.discardCount = 0;
+        this.resetRoundState();
+        this.clearAllTimers();
+
+        if (reset) {
+            this.roundHistory = [];
+            this.roundStarterIndex = 0;
+            this.turnIndex = 0;
+
+            this.playerOrder.forEach(id => {
+                if (this.players[id]) {
+                    this.players[id].totalScore = 0;
+                    this.players[id].hats = 0;
+                }
+            });
+        } else {
+            this.roundStarterIndex = (this.roundStarterIndex + 1) % this.playerOrder.length;
+            this.turnIndex = this.roundStarterIndex;
+
+            if (!this.players[this.playerOrder[this.turnIndex]]?.connected) {
+                this.turnIndex = this.getNextActivePlayerIndex(this.turnIndex, 1);
+            }
+        }
+
+        this.playerOrder.forEach(id => {
+            if (this.players[id]) {
+                this.players[id].hand = [];
+                this.players[id].hasDrawn = false;
+                this.players[id].hasAtePenalty = false;
+            }
+        });
+
+        let dealCount = 0;
+
+        this.timers.deal = setInterval(() => {
+            this.playerOrder.forEach(id => {
+                if (this.deck.length > 0 && this.players[id]) {
+                    this.players[id].hand.push(this.deck.pop());
+                }
             });
 
-            let counts = {};
-            for (let i = 0; i < initials.length; i++) {
-                let init = initials[i];
-                if (counts[init]) {
-                    counts[init]++;
-                    initials[i] = init + counts[init];
-                } else { 
-                    counts[init] = 1; 
+            if (++dealCount === STARTING_HAND_SIZE) {
+                clearInterval(this.timers.deal);
+                this.timers.deal = null;
+
+                let firstCard = this.deck.pop();
+                while (firstCard && firstCard.value === 'J' && firstCard.color === 'black') {
+                    this.deck.unshift(firstCard);
+                    firstCard = this.deck.pop();
+                }
+
+                this.discardPile.push(firstCard);
+                this.discardCount++;
+                io.emit('gameReady');
+                this.processCardLogic(firstCard, { id: null });
+                this.resetTurnTimer();
+                this.broadcastUpdate();
+            }
+        }, DEAL_INTERVAL_MS);
+    }
+
+    handleRoundEnd(winnerId, closedWithAce) {
+        this.clearAllTimers();
+
+        const historyEntry = {};
+
+        this.playerOrder.forEach(id => {
+            if (id === winnerId) {
+                historyEntry[id] = "WC";
+            } else {
+                let pts = this.calculateHandScore(this.players[id].hand);
+                if (closedWithAce) pts += 50;
+                this.players[id].totalScore += pts;
+                historyEntry[id] = this.players[id].totalScore;
+            }
+        });
+
+        this.roundHistory.push(historyEntry);
+
+        const under500 = this.playerOrder.filter(id => this.players[id] && this.players[id].totalScore < MAX_SCORE);
+        const overOrEqual500 = this.playerOrder.filter(id => this.players[id] && this.players[id].totalScore >= MAX_SCORE);
+
+        let finalWinnerId = null;
+
+        if (this.playerOrder.length === 2) {
+            if (overOrEqual500.length >= 1) {
+                if (under500.length >= 1) {
+                    finalWinnerId = under500[0];
+                } else {
+                    finalWinnerId = this.playerOrder.find(id => id !== overOrEqual500[0]) || null;
                 }
             }
-
-            document.getElementById('direction-indicator').innerText = dir === 1 ? initials.join(' ➔ ') : initials.join(' ⬅ ');
-        }
-
-        function renderScoreboard() {
-            const table = document.getElementById('score-table');
-            if (!table || !fullScoreHistory.length) return;
-
-            const playersSource = (scoreboardPlayers && scoreboardPlayers.length)
-                ? scoreboardPlayers
-                : (window.currentScoreData?.players || []);
-
-            if (!playersSource.length) return;
-
-            const pKeys = [];
-            const pMap = {};
-
-            playersSource.forEach(p => {
-                const key = p.sessionId || p.id;
-                if (!pKeys.includes(key)) pKeys.push(key);
-                pMap[key] = p;
-                if (p.id) pMap[p.id] = p;
-            });
-
-            let html = `<tr>${
-                pKeys.map(key => `<th>${pMap[key]?.name || 'Π'}${"🎩".repeat(pMap[key]?.hats || 0)}</th>`).join('')
-            }</tr>`;
-
-            const dataToShow = isScoreboardExpanded ? fullScoreHistory : fullScoreHistory.slice(-4);
-
-            dataToShow.forEach(row => {
-                html += '<tr>' + pKeys.map(key => {
-                    let value = row[key];
-
-                    if (value === undefined && pMap[key]?.id) {
-                        value = row[pMap[key].id];
-                    }
-
-                    if (value === "WC") {
-                        return '<td><b style="color:var(--gold)">WC</b></td>';
-                    }
-
-                    if (value === undefined || value === null) {
-                        return '<td>-</td>';
-                    }
-
-                    return `<td>${value}</td>`;
-                }).join('') + '</tr>';
-            });
-
-            table.innerHTML = html;
-        }
-
-        function toggleScoreboard() {
-            const s = document.getElementById('scoreboard');
-            s.style.display = s.style.display === 'block' ? 'none' : 'block';
-        }
-
-        function toggleChat() {
-            const b = document.getElementById('chat-box');
-            b.style.display = b.style.display === 'flex' ? 'none' : 'flex';
-        }
-        
-        function sendChat() {
-            const i = document.getElementById('chat-input');
-            if (i.value) {
-                socket.emit('chatMessage', i.value);
-                i.value = '';
+        } else {
+            if (under500.length === 1) {
+                finalWinnerId = under500[0];
+            } else if (under500.length >= 2 && overOrEqual500.length > 0) {
+                const rescueScore = Math.max(...under500.map(id => this.players[id].totalScore));
+                overOrEqual500.forEach(id => {
+                    this.players[id].hats++;
+                    this.players[id].totalScore = rescueScore;
+                });
             }
         }
-    </script>
-</body>
-</html>
+
+        io.emit('revealHands', this.playerOrder.map(id => this.players[id]));
+        io.emit('updateScoreboard', {
+            history: this.roundHistory,
+            players: this.playerOrder.map(id => this.players[id]).filter(Boolean)
+        });
+
+        if (finalWinnerId) {
+            const winner = this.players[finalWinnerId];
+            io.emit('gameOver', `🏆 Νικητής: ${winner.name}`);
+            this.gameStarted = false;
+            this.refreshLobbyTimer();
+            return;
+        }
+
+        this.timers.restart = setTimeout(() => this.startNewRound(false), ROUND_RESTART_MS);
+    }
+
+    broadcastUpdate() {
+        const currentId = this.playerOrder[this.turnIndex];
+        const cp = this.players[currentId];
+
+        const publicPlayers = this.playerOrder.map(pid => {
+            const p = this.players[pid];
+            if (!p) return null;
+            return {
+                id: pid,
+                sessionId: p.sessionId,
+                name: p.name,
+                handCount: p.hand.length,
+                hats: p.hats,
+                totalScore: p.totalScore,
+                connected: p.connected
+            };
+        }).filter(Boolean);
+
+        this.playerOrder.forEach(id => {
+            const p = this.players[id];
+            if (!p) return;
+
+            io.to(id).emit('updateUI', {
+                players: publicPlayers,
+                topCard: this.discardPile[this.discardPile.length - 1],
+                discardCount: this.discardCount,
+                penalty: this.penaltyStack,
+                direction: this.direction,
+                currentPlayerName: cp ? cp.name : "...",
+                currentPlayerId: currentId,
+                activeSuit: this.activeSuit,
+                deckCount: this.deck.length,
+                myHand: p.hand,
+                isMyTurn: (id === currentId)
+            });
+        });
+    }
+
+    disconnectPlayer(socketId) {
+        this.refreshLobbyTimer();
+
+        if (!this.players[socketId]) return;
+
+        this.players[socketId].connected = false;
+        const activeCount = this.playerOrder.filter(id => this.players[id] && this.players[id].connected).length;
+
+        if (!this.gameStarted) {
+            this.playerOrder = this.playerOrder.filter(id => id !== socketId);
+            delete this.players[socketId];
+            io.emit('playerCountUpdate', this.playerOrder.length);
+            return;
+        }
+
+        if (activeCount < 2) {
+            this.resetToLobby();
+            io.emit('gameInterrupted', { message: 'Παίκτες αποσυνδέθηκαν. Το παιχνίδι διεκόπη.' });
+            io.emit('notification', 'Παίκτες αποσυνδέθηκαν. Το παιχνίδι διεκόπη.');
+            this.refreshLobbyTimer();
+            return;
+        }
+
+        if (this.playerOrder[this.turnIndex] === socketId) {
+            this.advanceTurn(1);
+            this.broadcastUpdate();
+        }
+    }
+}
+
+let globalGameInstance = new Game();
+
+// === GLOBAL ERROR HANDLING ===
+process.on('uncaughtException', (err) => {
+    console.error('Αποτράπηκε Crash (Exception):', err);
+    if (globalGameInstance) globalGameInstance.forceEmergencyReset();
+});
+
+process.on('unhandledRejection', (reason) => {
+    console.error('Αποτράπηκε Crash (Rejection):', reason);
+});
+
+io.on('connection', (socket) => {
+    if (!globalGameInstance.gameStarted) globalGameInstance.refreshLobbyTimer();
+
+    socket.on('joinGame', (data) => {
+        globalGameInstance.joinGame(socket, data);
+    });
+
+    socket.on('startGameRequest', () => {
+        globalGameInstance.refreshLobbyTimer();
+
+        const activeCount = globalGameInstance.playerOrder.filter(
+            id => globalGameInstance.players[id] && globalGameInstance.players[id].connected
+        ).length;
+
+        if (!globalGameInstance.gameStarted && !globalGameInstance.starting && activeCount >= 2) {
+            globalGameInstance.starting = true;
+            globalGameInstance.startNewRound(true);
+        }
+    });
+
+    socket.on('playCard', (data) => {
+        globalGameInstance.playCard(socket, data);
+    });
+
+    socket.on('drawCard', () => {
+        globalGameInstance.drawCard(socket);
+    });
+
+    socket.on('passTurn', () => {
+        globalGameInstance.passTurn(socket);
+    });
+
+    socket.on('chatMessage', (msg) => {
+        globalGameInstance.refreshLobbyTimer();
+        const p = globalGameInstance.players[socket.id];
+
+        if (p && (!p.lastChat || Date.now() - p.lastChat > 500)) {
+            p.lastChat = Date.now();
+            io.emit('chatUpdate', {
+                name: p.name,
+                text: String(msg).replace(/[<>]/g, '').substring(0, MAX_CHAT_LEN)
+            });
+        }
+    });
+
+    socket.on('disconnect', () => {
+        globalGameInstance.disconnectPlayer(socket.id);
+    });
+});
+
+const PORT = process.env.PORT || 3000;
+server.listen(PORT, () => {
+    console.log(`Ο Μαύρος Βαλές τρέχει στο port ${PORT}`);
+});
