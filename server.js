@@ -8,7 +8,7 @@ const server = http.createServer(app);
 
 // === ΣΤΑΤΙΚΑ ΑΡΧΕΙΑ & PATHS ===
 app.get('/', (req, res) => {
-    res.sendFile(path.join(__dirname, 'index.html'));p.hasDrawn = true;
+    res.sendFile(path.join(__dirname, 'index.html'));
 });
 
 app.get('/ping', (req, res) => {
@@ -30,8 +30,8 @@ const VALUES = ['A', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K'
 
 const io = new Server(server, {
     cors: { origin: "*", methods: ["GET", "POST"] },
-    pingInterval: 25000,   // Στέλνει "ελέγχους" κάθε 25 δευτερόλεπτα
-    pingTimeout: 60000     // Περιμένει 1 ολόκληρο λεπτό πριν σε πετάξει αν χάσεις το σήμα
+    pingInterval: 25000,
+    pingTimeout: 60000
 });
 
 class Game {
@@ -39,15 +39,12 @@ class Game {
         this.deck = [];
         this.discardPile = [];
         this.discardCount = 0;
-
         this.players = {};
         this.playerOrder = [];
-
         this.gameStarted = false;
         this.starting = false;
         this.roundHistory = [];
         this.roundStarterIndex = 0;
-
         this.timers = { lobby: null, deal: null, turn: null, restart: null };
         this.resetRoundState();
     }
@@ -74,17 +71,17 @@ class Game {
     resetToLobby() {
         this.clearAllTimers();
 
-        this.deck = [];
-        this.discardPile = [];
+        // ΕΠΙΘΕΤΙΚΟ ΚΑΘΑΡΙΣΜΑ RAM (Garbage Collection)
+        this.deck.length = 0;
+        this.discardPile.length = 0;
+        this.roundHistory.length = 0;
+        
         this.discardCount = 0;
-
         this.gameStarted = false;
         this.starting = false;
-        this.roundHistory = [];
         this.roundStarterIndex = 0;
         this.resetRoundState();
 
-        // κρατάμε μόνο τους συνδεδεμένους στο lobby
         this.playerOrder = this.playerOrder.filter(id => this.players[id] && this.players[id].connected);
 
         Object.keys(this.players).forEach(id => {
@@ -93,8 +90,7 @@ class Game {
                 delete this.players[id];
                 return;
             }
-
-            p.hand = [];
+            if (p.hand) p.hand.length = 0; // Καθαρισμός μνήμης χεριού
             p.totalScore = 0;
             p.hats = 0;
             p.hasDrawn = false;
@@ -107,8 +103,8 @@ class Game {
 
     forceEmergencyReset() {
         this.resetToLobby();
-        io.emit('gameInterrupted', { message: '🚨 Σφάλμα διακομιστή. Επαναφορά...' });
-        io.emit('notification', '🚨 Σφάλμα διακομιστή. Επαναφορά...');
+        io.emit('gameInterrupted', { message: '🚨 Κρίσιμο Σφάλμα! Επαναφορά...' });
+        io.emit('notification', '🚨 Κρίσιμο Σφάλμα! Επαναφορά...');
         this.refreshLobbyTimer();
     }
 
@@ -139,6 +135,7 @@ class Game {
     calculateHandScore(hand) {
         if (!hand || !Array.isArray(hand)) return 0;
         return hand.reduce((score, c) => {
+            if (!c || !c.value) return score; // Προστασία από undefined κάρτες
             if (c.value === 'A') return score + 50;
             if (['K', 'Q', 'J', '10'].includes(c.value)) return score + 10;
             return score + (Number(c.value) || 0);
@@ -148,11 +145,11 @@ class Game {
     resetLobby() {
         if (!this.gameStarted) {
             this.players = {};
-            this.playerOrder = [];
-            this.deck = [];
-            this.discardPile = [];
+            this.playerOrder.length = 0;
+            this.deck.length = 0;
+            this.discardPile.length = 0;
             this.discardCount = 0;
-            this.roundHistory = [];
+            this.roundHistory.length = 0;
             this.roundStarterIndex = 0;
             this.resetRoundState();
 
@@ -168,13 +165,14 @@ class Game {
     }
 
     safeDraw(player) {
-        if (!player) return false;
+        if (!player || !player.hand) return false;
 
         if (this.deck.length === 0) {
             if (this.discardPile.length <= 1) return false;
             const topCard = this.discardPile.pop();
             this.deck = this.shuffle([...this.discardPile]);
-            this.discardPile = [topCard];
+            this.discardPile.length = 0; // Απελευθέρωση παλιάς στοίβας
+            if (topCard) this.discardPile.push(topCard);
             io.emit('notification', '🔄 Ανακάτεμα τράπουλας!');
         }
 
@@ -188,7 +186,14 @@ class Game {
     resetTurnTimer() {
         if (this.timers.turn) clearTimeout(this.timers.turn);
         if (!this.gameStarted || this.playerOrder.length === 0) return;
-        this.timers.turn = setTimeout(() => this.autoPlayTurn(), TURN_TIME_MS);
+        
+        this.timers.turn = setTimeout(() => {
+            try {
+                this.autoPlayTurn();
+            } catch (e) {
+                console.error("Σφάλμα στο autoPlayTurn:", e);
+            }
+        }, TURN_TIME_MS);
     }
 
     getNextActivePlayerIndex(startIndex, steps = 1) {
@@ -199,8 +204,11 @@ class Game {
         const n = this.playerOrder.length;
 
         for (let i = 0; i < steps; i++) {
+            let loopGuard = 0;
             do {
                 idx = (idx + this.direction + n) % n;
+                loopGuard++;
+                if (loopGuard > n * 2) break; // Προστασία από Infinite Loop
             } while (!this.players[this.playerOrder[idx]] || !this.players[this.playerOrder[idx]].connected);
         }
         return idx;
@@ -214,8 +222,11 @@ class Game {
         const n = this.playerOrder.length;
 
         for (let i = 0; i < steps; i++) {
+            let loopGuard = 0;
             do {
                 idx = (idx - this.direction + n) % n;
+                loopGuard++;
+                if (loopGuard > n * 2) break;
             } while (!this.players[this.playerOrder[idx]] || !this.players[this.playerOrder[idx]].connected);
         }
         return idx;
@@ -289,17 +300,14 @@ class Game {
         if (existingId) {
             if (existingId === socket.id) {
                 this.players[socket.id].connected = true;
-
                 socket.emit('rejoinSuccess', {
                     gameStarted: this.gameStarted,
                     myHand: this.players[socket.id].hand,
                     history: this.roundHistory,
                     players: this.playerOrder.map(id => this.players[id]).filter(Boolean)
                 });
-
                 if (this.gameStarted) this.broadcastUpdate();
                 else io.emit('playerCountUpdate', this.playerOrder.length);
-
                 return;
             }
 
@@ -342,7 +350,6 @@ class Game {
         };
 
         this.playerOrder.push(socket.id);
-
         io.emit('playerCountUpdate', this.playerOrder.length);
         socket.emit('joinedLobby');
     }
@@ -351,29 +358,15 @@ class Game {
         this.refreshLobbyTimer();
         const p = this.players[socket.id];
 
-        if (!data || typeof data !== 'object') {
-            return socket.emit('actionRejected');
-        }
-
-        if (!this.gameStarted || this.playerOrder[this.turnIndex] !== socket.id || !p) {
-            return socket.emit('actionRejected');
-        }
-
-        if (!Number.isInteger(data.index) || data.index < 0 || data.index >= p.hand.length) {
-            return socket.emit('actionRejected');
-        }
-
-        if (data.declaredSuit && !SUITS.includes(data.declaredSuit)) {
-            return socket.emit('actionRejected');
-        }
+        if (!data || typeof data !== 'object') return socket.emit('actionRejected');
+        if (!this.gameStarted || this.playerOrder[this.turnIndex] !== socket.id || !p) return socket.emit('actionRejected');
+        if (!Number.isInteger(data.index) || data.index < 0 || data.index >= p.hand.length) return socket.emit('actionRejected');
+        if (data.declaredSuit && !SUITS.includes(data.declaredSuit)) return socket.emit('actionRejected');
 
         const card = p.hand[data.index];
         const topCard = this.discardPile[this.discardPile.length - 1];
         
-        // Safety check για undefined φύλλα
-        if (!card || !topCard) {
-            return socket.emit('invalidMove');
-        }
+        if (!card || !topCard) return socket.emit('invalidMove');
 
         const top2 = this.discardPile.length >= 2 ? this.discardPile[this.discardPile.length - 2] : null;
         const effectiveSuit = this.activeSuit || topCard.suit;
@@ -396,11 +389,8 @@ class Game {
             if (card.value === topCard.value && card.suit === topCard.suit) {
                 io.emit('notification', `${p.name}: Copy paste! 👯`);
             } else if (
-                top2 &&
-                topCard.value === top2.value &&
-                topCard.suit === top2.suit &&
-                card.value === topCard.value &&
-                card.suit !== topCard.suit
+                top2 && topCard.value === top2.value && topCard.suit === top2.suit &&
+                card.value === topCard.value && card.suit !== topCard.suit
             ) {
                 io.emit('notification', `${p.name}: Copy erased! ❌`);
             }
@@ -430,7 +420,7 @@ class Game {
                 this.safeDraw(p);
                 io.emit('notification', `${p.name}: Έκλεισα με 8 και τραβάω αναγκαστικά φύλλο! 🃏`);
                 this.processCardLogic(card, p);
-                p.hasDrawn = true;
+                p.hasDrawn = true; // BUG FIX: Τώρα θυμάται ότι τράβηξε
                 this.broadcastUpdate();
                 return;
             }
@@ -442,29 +432,31 @@ class Game {
             if (card.value === 'J' && card.color === 'black') {
                 const totalPenalty = (this.penaltyType === 'J' ? this.penaltyStack : 0) + 10;
                 for (let i = 0; i < totalPenalty; i++) this.safeDraw(this.players[nextVictim]);
-                io.emit('notification', `${p.name}: Κλείσιμο με Μαύρο Βαλέ! +${totalPenalty} στον/στην ${this.players[nextVictim].name}!`);
+                io.emit('notification', `${p.name}: Κλείσιμο με Μαύρο Βαλέ! +${totalPenalty} στον/στην ${this.players[nextVictim]?.name}!`);
                 this.penaltyStack = 0;
                 this.penaltyType = null;
                 isPenaltyHandled = true;
             } else if (card.value === '7') {
                 const totalPenalty = (this.penaltyType === '7' ? this.penaltyStack : 0) + 2;
                 for (let i = 0; i < totalPenalty; i++) this.safeDraw(this.players[nextVictim]);
-                io.emit('notification', `${p.name}: Κλείσιμο με 7! +${totalPenalty} στον/στην ${this.players[nextVictim].name}!`);
+                io.emit('notification', `${p.name}: Κλείσιμο με 7! +${totalPenalty} στον/στην ${this.players[nextVictim]?.name}!`);
                 this.penaltyStack = 0;
                 this.penaltyType = null;
                 isPenaltyHandled = true;
             } else if (card.value === '2') {
                 this.safeDraw(this.players[prevVictim]);
-                io.emit('notification', `${p.name}: Κλείσιμο με 2! +1 στον/στην ${this.players[prevVictim].name}!`);
+                io.emit('notification', `${p.name}: Κλείσιμο με 2! +1 στον/στην ${this.players[prevVictim]?.name}!`);
                 isPenaltyHandled = true;
             }
 
             if (this.timers.turn) clearTimeout(this.timers.turn);
             this.broadcastUpdate();
-            this.timers.restart = setTimeout(
-                () => this.handleRoundEnd(socket.id, card.value === 'A'),
-                isPenaltyHandled ? 3000 : 1500
-            );
+            
+            this.timers.restart = setTimeout(() => {
+                try {
+                    this.handleRoundEnd(socket.id, card.value === 'A');
+                } catch(e) { console.error("Σφάλμα στο τέλος γύρου:", e); }
+            }, isPenaltyHandled ? 3000 : 1500);
             return;
         }
 
@@ -476,9 +468,7 @@ class Game {
         this.refreshLobbyTimer();
         const p = this.players[socket.id];
 
-        if (!this.gameStarted || this.playerOrder[this.turnIndex] !== socket.id || !p) {
-            return socket.emit('actionRejected');
-        }
+        if (!this.gameStarted || this.playerOrder[this.turnIndex] !== socket.id || !p) return socket.emit('actionRejected');
 
         if (this.penaltyStack > 0) {
             for (let i = 0; i < this.penaltyStack; i++) this.safeDraw(p);
@@ -503,7 +493,6 @@ class Game {
         const p = this.players[socket.id];
 
         if (!this.gameStarted || this.playerOrder[this.turnIndex] !== socket.id || !p) return;
-
         if (this.penaltyStack > 0) return socket.emit('notification', 'Πρέπει να τραβήξεις τις κάρτες ποινής πρώτα!');
         if (!p.hasDrawn) return socket.emit('notification', 'Δεν μπορείς να πας πάσο αν δεν τραβήξεις φύλλο!');
 
@@ -526,7 +515,6 @@ class Game {
                     this.consecutiveTwos = 0;
                 }
                 io.emit('notification', msg);
-
                 const victimId = this.playerOrder[this.getPreviousActivePlayerIndex(this.turnIndex, 1)];
                 this.safeDraw(this.players[victimId]);
             }
@@ -563,19 +551,21 @@ class Game {
     }
 
     startNewRound(reset = false) {
+        this.clearAllTimers();
         this.gameStarted = true;
         this.starting = false;
+        
+        // Καθαρισμός Arrays για RAM GC
+        this.deck.length = 0;
+        this.discardPile.length = 0;
         this.deck = this.createDeck();
-        this.discardPile = [];
         this.discardCount = 0;
         this.resetRoundState();
-        this.clearAllTimers();
 
         if (reset) {
-            this.roundHistory = [];
+            this.roundHistory.length = 0;
             this.roundStarterIndex = 0;
             this.turnIndex = 0;
-
             this.playerOrder.forEach(id => {
                 if (this.players[id]) {
                     this.players[id].totalScore = 0;
@@ -593,7 +583,7 @@ class Game {
 
         this.playerOrder.forEach(id => {
             if (this.players[id]) {
-                this.players[id].hand = [];
+                if(this.players[id].hand) this.players[id].hand.length = 0;
                 this.players[id].hasDrawn = false;
                 this.players[id].hasAtePenalty = false;
             }
@@ -602,46 +592,50 @@ class Game {
         let dealCount = 0;
 
         this.timers.deal = setInterval(() => {
-            this.playerOrder.forEach(id => {
-                if (this.deck.length > 0 && this.players[id]) {
-                    this.players[id].hand.push(this.deck.pop());
-                }
-            });
+            try {
+                this.playerOrder.forEach(id => {
+                    if (this.deck.length > 0 && this.players[id]) {
+                        this.players[id].hand.push(this.deck.pop());
+                    }
+                });
 
-            if (++dealCount === STARTING_HAND_SIZE) {
+                if (++dealCount === STARTING_HAND_SIZE) {
+                    clearInterval(this.timers.deal);
+                    this.timers.deal = null;
+
+                    let firstCard = this.deck.pop();
+                    let loopProtect = 0;
+                    while (firstCard && firstCard.value === 'J' && firstCard.color === 'black' && loopProtect < 15) {
+                        this.deck.unshift(firstCard);
+                        firstCard = this.deck.pop();
+                        loopProtect++;
+                    }
+
+                    if (firstCard) {
+                        this.discardPile.push(firstCard);
+                        this.discardCount++;
+                    }
+                    
+                    io.emit('gameReady');
+                    this.processCardLogic(firstCard, { id: null });
+                    this.resetTurnTimer();
+                    this.broadcastUpdate();
+                }
+            } catch (e) {
+                console.error("Σφάλμα κατά το μοίρασμα:", e);
                 clearInterval(this.timers.deal);
-                this.timers.deal = null;
-
-                let firstCard = this.deck.pop();
-                let loopProtect = 0; // ΔΙΚΛΕΙΔΑ ΑΣΦΑΛΕΙΑΣ ΓΙΑ ΑΠΕΙΡΗ ΛΟΥΠΑ
-                while (firstCard && firstCard.value === 'J' && firstCard.color === 'black' && loopProtect < 15) {
-                    this.deck.unshift(firstCard);
-                    firstCard = this.deck.pop();
-                    loopProtect++;
-                }
-
-                if (firstCard) {
-                    this.discardPile.push(firstCard);
-                    this.discardCount++;
-                }
-                
-                io.emit('gameReady');
-                this.processCardLogic(firstCard, { id: null });
-                this.resetTurnTimer();
-                this.broadcastUpdate();
             }
         }, DEAL_INTERVAL_MS);
     }
 
     handleRoundEnd(winnerId, closedWithAce) {
         this.clearAllTimers();
-
         const historyEntry = {};
 
         this.playerOrder.forEach(id => {
             if (id === winnerId) {
                 historyEntry[id] = "WC";
-            } else {
+            } else if (this.players[id]) {
                 let pts = this.calculateHandScore(this.players[id].hand);
                 if (closedWithAce) pts += 50;
                 this.players[id].totalScore += pts;
@@ -658,11 +652,7 @@ class Game {
 
         if (this.playerOrder.length === 2) {
             if (overOrEqual500.length >= 1) {
-                if (under500.length >= 1) {
-                    finalWinnerId = under500[0];
-                } else {
-                    finalWinnerId = this.playerOrder.find(id => id !== overOrEqual500[0]) || null;
-                }
+                finalWinnerId = under500.length >= 1 ? under500[0] : (this.playerOrder.find(id => id !== overOrEqual500[0]) || null);
             }
         } else {
             if (under500.length === 1) {
@@ -673,8 +663,7 @@ class Game {
                     this.players[id].hats++;
                     this.players[id].totalScore = rescueScore;
                 });
-            } else if (under500.length === 0) {
-                // ΔΙΟΡΘΩΣΗ: Αν όλοι βγουν ταυτόχρονα πάνω από 500, κερδίζει αυτός με το μικρότερο σκορ
+            } else if (under500.length === 0 && this.playerOrder.length > 0) {
                 const lowestScore = Math.min(...this.playerOrder.map(id => this.players[id].totalScore));
                 finalWinnerId = this.playerOrder.find(id => this.players[id].totalScore === lowestScore);
             }
@@ -688,18 +677,24 @@ class Game {
 
         if (finalWinnerId) {
             const winner = this.players[finalWinnerId];
-            io.emit('gameOver', `🏆 Νικητής: ${winner.name}`);
+            io.emit('gameOver', `🏆 Νικητής: ${winner?.name || 'Άγνωστος'}`);
             this.gameStarted = false;
             this.refreshLobbyTimer();
             return;
         }
 
-        this.timers.restart = setTimeout(() => this.startNewRound(false), ROUND_RESTART_MS);
+        this.timers.restart = setTimeout(() => {
+            try {
+                this.startNewRound(false);
+            } catch(e) { console.error("Σφάλμα επανεκκίνησης:", e); }
+        }, ROUND_RESTART_MS);
     }
 
     broadcastUpdate() {
+        if (this.playerOrder.length === 0) return;
+        
         const currentId = this.playerOrder[this.turnIndex];
-        const cp = this.players[currentId];
+        const cp = currentId ? this.players[currentId] : null;
 
         const publicPlayers = this.playerOrder.map(pid => {
             const p = this.players[pid];
@@ -708,12 +703,14 @@ class Game {
                 id: pid,
                 sessionId: p.sessionId,
                 name: p.name,
-                handCount: p.hand.length,
-                hats: p.hats,
-                totalScore: p.totalScore,
+                handCount: p.hand ? p.hand.length : 0,
+                hats: p.hats || 0,
+                totalScore: p.totalScore || 0,
                 connected: p.connected
             };
         }).filter(Boolean);
+
+        const topCard = this.discardPile.length > 0 ? this.discardPile[this.discardPile.length - 1] : null;
 
         this.playerOrder.forEach(id => {
             const p = this.players[id];
@@ -721,7 +718,7 @@ class Game {
 
             io.to(id).emit('updateUI', {
                 players: publicPlayers,
-                topCard: this.discardPile[this.discardPile.length - 1],
+                topCard: topCard,
                 discardCount: this.discardCount,
                 penalty: this.penaltyStack,
                 direction: this.direction,
@@ -737,7 +734,6 @@ class Game {
 
     disconnectPlayer(socketId) {
         this.refreshLobbyTimer();
-
         if (!this.players[socketId]) return;
 
         this.players[socketId].connected = false;
@@ -767,10 +763,9 @@ class Game {
 
 let globalGameInstance = new Game();
 
-// === GLOBAL ERROR HANDLING ===
 process.on('uncaughtException', (err) => {
     console.error('Αποτράπηκε Crash (Exception):', err);
-    if (globalGameInstance) globalGameInstance.forceEmergencyReset();
+    // Πλέον ΔΕΝ κάνουμε forceEmergencyReset για κάθε μικροσφάλμα!
 });
 
 process.on('unhandledRejection', (reason) => {
@@ -781,53 +776,63 @@ io.on('connection', (socket) => {
     if (!globalGameInstance.gameStarted) globalGameInstance.refreshLobbyTimer();
 
     socket.on('joinGame', (data) => {
-        globalGameInstance.joinGame(socket, data);
+        try { globalGameInstance.joinGame(socket, data); } 
+        catch (e) { console.error("Σφάλμα σύνδεσης:", e); }
     });
 
     socket.on('startGameRequest', () => {
-        globalGameInstance.refreshLobbyTimer();
+        try {
+            globalGameInstance.refreshLobbyTimer();
+            const activeCount = globalGameInstance.playerOrder.filter(
+                id => globalGameInstance.players[id] && globalGameInstance.players[id].connected
+            ).length;
 
-        const activeCount = globalGameInstance.playerOrder.filter(
-            id => globalGameInstance.players[id] && globalGameInstance.players[id].connected
-        ).length;
-
-        if (!globalGameInstance.gameStarted && !globalGameInstance.starting && activeCount >= 2) {
-            globalGameInstance.starting = true;
-            globalGameInstance.startNewRound(true);
-        }
+            if (!globalGameInstance.gameStarted && !globalGameInstance.starting && activeCount >= 2) {
+                globalGameInstance.starting = true;
+                globalGameInstance.startNewRound(true);
+            }
+        } catch (e) { console.error("Σφάλμα εκκίνησης:", e); }
     });
 
     socket.on('playCard', (data) => {
-        globalGameInstance.playCard(socket, data);
-    });
-
-    socket.on('drawCard', () => {
-        globalGameInstance.drawCard(socket);
-    });
-
-    socket.on('passTurn', () => {
-        globalGameInstance.passTurn(socket);
-    });
-
-    socket.on('chatMessage', (msg) => {
-        globalGameInstance.refreshLobbyTimer();
-        const p = globalGameInstance.players[socket.id];
-
-        if (p && (!p.lastChat || Date.now() - p.lastChat > 500)) {
-            p.lastChat = Date.now();
-            io.emit('chatUpdate', {
-                name: p.name,
-                text: String(msg).replace(/[<>]/g, '').substring(0, MAX_CHAT_LEN)
-            });
+        try { globalGameInstance.playCard(socket, data); } 
+        catch (e) { 
+            console.error("Σφάλμα κίνησης φύλλου:", e);
+            socket.emit('invalidMove'); 
         }
     });
 
+    socket.on('drawCard', () => {
+        try { globalGameInstance.drawCard(socket); } 
+        catch (e) { console.error("Σφάλμα τραβήγματος:", e); }
+    });
+
+    socket.on('passTurn', () => {
+        try { globalGameInstance.passTurn(socket); } 
+        catch (e) { console.error("Σφάλμα πάσο:", e); }
+    });
+
+    socket.on('chatMessage', (msg) => {
+        try {
+            globalGameInstance.refreshLobbyTimer();
+            const p = globalGameInstance.players[socket.id];
+            if (p && (!p.lastChat || Date.now() - p.lastChat > 500)) {
+                p.lastChat = Date.now();
+                io.emit('chatUpdate', {
+                    name: p.name,
+                    text: String(msg).replace(/[<>]/g, '').substring(0, MAX_CHAT_LEN)
+                });
+            }
+        } catch (e) { console.error("Σφάλμα chat:", e); }
+    });
+
     socket.on('disconnect', () => {
-        globalGameInstance.disconnectPlayer(socket.id);
+        try { globalGameInstance.disconnectPlayer(socket.id); } 
+        catch (e) { console.error("Σφάλμα αποσύνδεσης:", e); }
     });
 });
 
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
-    console.log(`Ο Μαύρος Βαλές τρέχει στο port ${PORT}`);
+    console.log(`Ο Μαύρος Βαλές ♠️ τρέχει στο port ${PORT}`);
 });
