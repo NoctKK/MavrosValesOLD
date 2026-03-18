@@ -29,7 +29,9 @@ const SUITS = ['♠', '♣', '♥', '♦'];
 const VALUES = ['A', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K'];
 
 const io = new Server(server, {
-    cors: { origin: "*", methods: ["GET", "POST"] }
+    cors: { origin: "*", methods: ["GET", "POST"] },
+    pingInterval: 25000,   // Στέλνει "ελέγχους" κάθε 25 δευτερόλεπτα
+    pingTimeout: 60000     // Περιμένει 1 ολόκληρο λεπτό πριν σε πετάξει αν χάσεις το σήμα
 });
 
 class Game {
