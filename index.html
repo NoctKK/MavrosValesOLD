@@ -420,11 +420,14 @@
             <input type="text" id="username" class="name-input" placeholder="Το όνομά σου..." maxlength="15">
             <button id="login-btn" class="game-btn" onclick="joinGame()">ΕΙΣΟΔΟΣ</button>
         </div>
+        
         <div id="waiting-area" style="display:none; text-align:center;">
             <p id="waiting-msg" style="font-size:24px; color:#aaa; margin-bottom:20px;">Σύνδεση...</p>
             <button id="start-btn" class="game-btn" onclick="startGameRequest()">ΕΚΚΙΝΗΣΗ</button>
+            <br>
+            <button class="game-btn" style="margin-top: 20px; font-size: 14px; padding: 10px 20px; background: linear-gradient(to bottom, #8a0000, #4d0000); border-color: #ff4444;" onclick="changeName()">ΑΛΛΑΓΗ ΟΝΟΜΑΤΟΣ</button>
         </div>
-    </div>
+        </div>
 
     <div id="victory-screen">
         <h1 id="victory-msg" style="color: white; font-size: 50px; text-shadow: 0 0 20px #4f4; line-height: 1.2; max-width: 80%; margin-bottom: 40px;">🏆</h1>
@@ -536,8 +539,7 @@
         let isScoreboardExpanded = false;
         let msgQueue = [];
         let isMsgShowing = false;
-        let lastDiscardCount = 0; 
-
+        let lastDiscardCount = 0;
         function clearGameTimer() {
             const timerContainer = document.getElementById("turn-timer");
             if (animationFrameId) {
@@ -609,6 +611,7 @@
                 setTimeout(showNextMsg, 80); 
             }, MSG_SHOW_MS); 
         }
+
         function joinGame() {
             const input = document.getElementById('username');
             const btn = document.getElementById('login-btn');
@@ -639,6 +642,22 @@
 
             socket.emit('joinGame', { username: name, sessionId: sessionId });
         }
+
+        // --- ΝΕΑ ΣΥΝΑΡΤΗΣΗ: ΑΛΛΑΓΗ ΟΝΟΜΑΤΟΣ ---
+        function changeName() {
+            // Καθαρίζουμε το αποθηκευμένο session και όνομα
+            localStorage.removeItem('mv_username');
+            localStorage.removeItem('mv_session');
+            
+            // Αποσυνδέουμε τον παίκτη για να ελευθερωθεί η θέση
+            if (socket.connected) {
+                socket.disconnect();
+            }
+            
+            // Ανανέωση της σελίδας για να ανοίξει πάλι η αρχική οθόνη
+            window.location.reload();
+        }
+        // ----------------------------------------
 
         function forceReconnect() { 
             const sess = localStorage.getItem('mv_session');
