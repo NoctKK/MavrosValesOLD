@@ -620,6 +620,7 @@
             btn.disabled = true;
             btn.innerText = "ΣΥΝΔΕΣΗ...";
 
+            // Χρήση localStorage για να μην χάνεται το session αν κλείσει η καρτέλα στο κινητό
             let sessionId = localStorage.getItem('mv_session') || 'sess_' + Math.random().toString(36).substr(2, 9);
             localStorage.setItem('mv_session', sessionId);
             localStorage.setItem('mv_username', name);
@@ -953,9 +954,17 @@
                 const topCard = window.currentTopCard;
                 const effectiveSuit = window.currentActiveSuit || (topCard ? topCard.suit : null);
                 
-                if (topCard && topCard.value === 'A' && suit === effectiveSuit) {
-                    executePlayCard(index, null);
-                    return;
+                // === ΔΙΟΡΘΩΣΗ ΓΙΑ ΑΣΣΟ ΣΕ ΑΣΣΟ ===
+                if (topCard && topCard.value === 'A') {
+                    if (suit === effectiveSuit) {
+                        executePlayCard(index, null); // Παίζεται υποχρεωτικά σαν φύλλο
+                    } else {
+                        msgQueue.push("Ο Άσσος σε Άσσο παίζεται ΜΟΝΟ σαν φύλλο (ίδιο χρώμα)!");
+                        if (!isMsgShowing) showNextMsg();
+                        document.querySelectorAll('.hand-card').forEach(c => c.classList.add('shake')); 
+                        setTimeout(() => document.querySelectorAll('.hand-card').forEach(c => c.classList.remove('shake')), 180); 
+                    }
+                    return; 
                 }
 
                 selectedAceIndex = index;
