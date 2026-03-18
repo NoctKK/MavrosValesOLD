@@ -609,7 +609,6 @@
                 setTimeout(showNextMsg, 80); 
             }, MSG_SHOW_MS); 
         }
-
         function joinGame() {
             const input = document.getElementById('username');
             const btn = document.getElementById('login-btn');
@@ -621,9 +620,9 @@
             btn.disabled = true;
             btn.innerText = "ΣΥΝΔΕΣΗ...";
 
-            let sessionId = sessionStorage.getItem('mv_session') || 'sess_' + Math.random().toString(36).substr(2, 9);
-            sessionStorage.setItem('mv_session', sessionId);
-            sessionStorage.setItem('mv_username', name);
+            let sessionId = localStorage.getItem('mv_session') || 'sess_' + Math.random().toString(36).substr(2, 9);
+            localStorage.setItem('mv_session', sessionId);
+            localStorage.setItem('mv_username', name);
 
             if (!socket.connected) {
                 socket.connect();
@@ -641,8 +640,8 @@
         }
 
         function forceReconnect() { 
-            const sess = sessionStorage.getItem('mv_session');
-            const name = sessionStorage.getItem('mv_username');
+            const sess = localStorage.getItem('mv_session');
+            const name = localStorage.getItem('mv_username');
             if (sess && name) {
                 socket.connect();
             } else {
@@ -663,8 +662,8 @@
             document.getElementById('reconnect-btn').style.display = 'none';
             myId = socket.id;
             
-            const name = sessionStorage.getItem('mv_username');
-            const session = sessionStorage.getItem('mv_session');
+            const name = localStorage.getItem('mv_username');
+            const session = localStorage.getItem('mv_session');
             if (name && session) {
                 socket.emit('joinGame', { username: name, sessionId: session });
             }
@@ -761,7 +760,7 @@
                 const btn = document.getElementById('login-btn');
                 if (btn) {
                     btn.disabled = false;
-                                            btn.innerText = 'ΕΙΣΟΔΟΣ';
+                    btn.innerText = 'ΕΙΣΟΔΟΣ';
                 }
             }
             msgQueue.push(m);
@@ -1271,6 +1270,7 @@
                 i.value = '';
             }
         }
+        
         // Anti-Sleep Μηχανισμός για το Render
         setInterval(() => {
             fetch('/ping').catch(() => {});
