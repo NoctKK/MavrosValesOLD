@@ -1271,6 +1271,10 @@
                 i.value = '';
             }
         }
+        // Anti-Sleep Μηχανισμός για το Render
+        setInterval(() => {
+            fetch('/ping').catch(() => {});
+        }, 3 * 60 * 1000); // Κάνει ένα αόρατο χτύπημα κάθε 3 λεπτά
     </script>
 </body>
 </html>
