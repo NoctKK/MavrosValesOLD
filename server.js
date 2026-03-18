@@ -8,7 +8,7 @@ const server = http.createServer(app);
 
 // === ΣΤΑΤΙΚΑ ΑΡΧΕΙΑ & PATHS ===
 app.get('/', (req, res) => {
-    res.sendFile(path.join(__dirname, 'index.html'));
+    res.sendFile(path.join(__dirname, 'index.html'));p.hasDrawn = true;
 });
 
 app.get('/ping', (req, res) => {
@@ -430,6 +430,7 @@ class Game {
                 this.safeDraw(p);
                 io.emit('notification', `${p.name}: Έκλεισα με 8 και τραβάω αναγκαστικά φύλλο! 🃏`);
                 this.processCardLogic(card, p);
+                p.hasDrawn = true;
                 this.broadcastUpdate();
                 return;
             }
