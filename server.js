@@ -376,7 +376,14 @@ class Game {
             if (this.penaltyType === '7' && card.value === '7') isValid = true;
             if (this.penaltyType === 'J' && card.value === 'J') isValid = true;
         } else {
-            if (card.value === 'A') isValid = true;
+            // === ΔΙΟΡΘΩΣΗ ΓΙΑ ΑΣΣΟ ΣΕ ΑΣΣΟ ===
+            if (card.value === 'A') {
+                if (topCard && topCard.value === 'A') {
+                    if (card.suit === effectiveSuit) isValid = true;
+                } else {
+                    isValid = true;
+                }
+            }
             else if (card.value === topCard.value || card.suit === effectiveSuit) isValid = true;
             else if (card.value === 'J' && card.color === 'red' && topCard.value === 'J') isValid = true;
         }
@@ -397,7 +404,8 @@ class Game {
         }
 
         if (card.value === 'A') {
-            if (topCard && topCard.value === 'A' && card.suit === effectiveSuit && !data.declaredSuit) {
+            // === ΔΙΟΡΘΩΣΗ ΓΙΑ ΑΣΣΟ ΣΕ ΑΣΣΟ (ΜΟΝΟ ΣΑΝ ΦΥΛΛΟ) ===
+            if (topCard && topCard.value === 'A') {
                 this.activeSuit = null;
                 io.emit('notification', `${p.name}: Σαν φύλλο!`);
             } else {
@@ -420,7 +428,7 @@ class Game {
                 this.safeDraw(p);
                 io.emit('notification', `${p.name}: Έκλεισα με 8 και τραβάω αναγκαστικά φύλλο! 🃏`);
                 this.processCardLogic(card, p);
-                p.hasDrawn = true; // BUG FIX: Τώρα θυμάται ότι τράβηξε
+                p.hasDrawn = true;
                 this.broadcastUpdate();
                 return;
             }
@@ -633,13 +641,19 @@ class Game {
         const historyEntry = {};
 
         this.playerOrder.forEach(id => {
+            const p = this.players[id];
+            if (!p) return;
+
+            // === ΔΙΟΡΘΩΣΗ ΓΙΑ ΤΗΝ ΠΑΥΛΑ ΣΤΟ ΣΚΟΡ ===
+            const historyKey = p.sessionId || id;
+
             if (id === winnerId) {
-                historyEntry[id] = "WC";
-            } else if (this.players[id]) {
-                let pts = this.calculateHandScore(this.players[id].hand);
+                historyEntry[historyKey] = "WC";
+            } else {
+                let pts = this.calculateHandScore(p.hand);
                 if (closedWithAce) pts += 50;
-                this.players[id].totalScore += pts;
-                historyEntry[id] = this.players[id].totalScore;
+                p.totalScore += pts;
+                historyEntry[historyKey] = p.totalScore;
             }
         });
 
@@ -765,7 +779,6 @@ let globalGameInstance = new Game();
 
 process.on('uncaughtException', (err) => {
     console.error('Αποτράπηκε Crash (Exception):', err);
-    // Πλέον ΔΕΝ κάνουμε forceEmergencyReset για κάθε μικροσφάλμα!
 });
 
 process.on('unhandledRejection', (reason) => {
