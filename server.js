@@ -135,6 +135,7 @@ class Game {
     }
 
     calculateHandScore(hand) {
+        if (!hand || !Array.isArray(hand)) return 0;
         return hand.reduce((score, c) => {
             if (c.value === 'A') return score + 50;
             if (['K', 'Q', 'J', '10'].includes(c.value)) return score + 10;
@@ -366,6 +367,12 @@ class Game {
 
         const card = p.hand[data.index];
         const topCard = this.discardPile[this.discardPile.length - 1];
+        
+        // Safety check για undefined φύλλα
+        if (!card || !topCard) {
+            return socket.emit('invalidMove');
+        }
+
         const top2 = this.discardPile.length >= 2 ? this.discardPile[this.discardPile.length - 2] : null;
         const effectiveSuit = this.activeSuit || topCard.suit;
         let isValid = false;
@@ -502,6 +509,7 @@ class Game {
     }
 
     processCardLogic(card, p) {
+        if (!card) return;
         let advance = true;
         let steps = 1;
         const isStart = (!p || !p.id);
@@ -602,13 +610,18 @@ class Game {
                 this.timers.deal = null;
 
                 let firstCard = this.deck.pop();
-                while (firstCard && firstCard.value === 'J' && firstCard.color === 'black') {
+                let loopProtect = 0; // ΔΙΚΛΕΙΔΑ ΑΣΦΑΛΕΙΑΣ ΓΙΑ ΑΠΕΙΡΗ ΛΟΥΠΑ
+                while (firstCard && firstCard.value === 'J' && firstCard.color === 'black' && loopProtect < 15) {
                     this.deck.unshift(firstCard);
                     firstCard = this.deck.pop();
+                    loopProtect++;
                 }
 
-                this.discardPile.push(firstCard);
-                this.discardCount++;
+                if (firstCard) {
+                    this.discardPile.push(firstCard);
+                    this.discardCount++;
+                }
+                
                 io.emit('gameReady');
                 this.processCardLogic(firstCard, { id: null });
                 this.resetTurnTimer();
@@ -657,6 +670,10 @@ class Game {
                     this.players[id].hats++;
                     this.players[id].totalScore = rescueScore;
                 });
+            } else if (under500.length === 0) {
+                // ΔΙΟΡΘΩΣΗ: Αν όλοι βγουν ταυτόχρονα πάνω από 500, κερδίζει αυτός με το μικρότερο σκορ
+                const lowestScore = Math.min(...this.playerOrder.map(id => this.players[id].totalScore));
+                finalWinnerId = this.playerOrder.find(id => this.players[id].totalScore === lowestScore);
             }
         }
 
